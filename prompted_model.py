@@ -9,12 +9,28 @@ D = 0.00794  # Tube diameter (m)
 h0 = 0.08  # Initial water height (m)
 hf = 0  # Final water height (m)
 
-# Friction factor
-f = 0.02  # Assumed constant for validation; can refine later
+# Friction factor calculation based on Reynolds number
+def friction_factor(Re):
+    if Re < 2000:  # Laminar flow
+        return 64 / Re
+    else:  # Turbulent flow (approximation for Colebrook)
+        return 0.079 / (Re ** 0.25)
 
-# Velocity calculation including friction
+# Velocity calculation including dynamic friction factor
 def velocity(h, L):
-    return np.sqrt(2 * g * h / (1 + f * L / D))
+    if h <= 0:
+        return 0  # Avoid negative or zero height
+    
+    # Estimate flow rate and velocity
+    Q = np.pi * D**2 / 4 * np.sqrt(2 * g * h)  # Flow rate (m^3/s)
+    V = Q / (np.pi * D**2 / 4)  # Flow velocity (m/s)
+    Re = (D * V * 1000) / (1e-6)  # Reynolds number
+    
+    # Calculate dynamic friction factor
+    f_dynamic = friction_factor(Re)
+    
+    # Apply velocity equation with dynamic friction factor
+    return np.sqrt(2 * g * h / (1 + f_dynamic * L / D))
 
 # Time-to-drain integrand
 def dt_dh(h, L):
@@ -23,7 +39,7 @@ def dt_dh(h, L):
 
 # Total drain time calculation
 def drain_time(L):
-    result, _ = quad(dt_dh, hf, h0, args=(L,))
+    result, _ = quad(dt_dh, hf, h0, args=(L,), limit=1000, epsabs=1e-8, epsrel=1e-8)
     return result
 
 # Validation against experimental data
@@ -54,8 +70,11 @@ def horizontal_range(L):
 # Multi-objective optimization (drain time + range)
 def objective(L):
     t_drain = drain_time(L)
+    if np.isnan(t_drain) or t_drain <= 0:
+        return np.inf  # Penalize invalid results
     h_range = horizontal_range(L)
-    # Normalize objectives: smaller values are better
+    if np.isnan(h_range) or h_range <= 0:
+        return np.inf  # Penalize invalid horizontal range
     return t_drain / 300 - h_range / 10  # Weighting factors can be adjusted
 
 # Optimize tube length
