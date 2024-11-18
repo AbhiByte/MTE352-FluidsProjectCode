@@ -37,33 +37,53 @@ def drain_time(L, C0, k):
     result, _ = quad(dt_dh, hf, h0, args=(L, C0, k), limit=1000, epsabs=1e-8, epsrel=1e-8)
     return result
 
-# Error function for calibration
+# Horizontal range calculation
+def horizontal_range(L, C0, k):
+    if L <= delta_z:
+        return 0  # Prevent invalid tube lengths
+    theta = np.arcsin(delta_z / L)  # Tube angle
+    v_exit = velocity(hf, L, C0, k)  # Exit velocity at final height
+    t_flight = np.sqrt(2 * delta_z / g)  # Time of free fall
+    return v_exit * t_flight * np.cos(theta)
+
 def error_function(params):
-    C0, k = params
+    C0, k = params  # Unpack parameters
     errors = []
     for L, exp_time in experimental_data.items():
         comp_time = drain_time(L, C0, k)
         errors.append((comp_time - exp_time) ** 2)  # Squared error
-    return sum(errors)
+    return sum(errors)  # Return scalar value
 
-# Initial guess for C0 and k
-initial_guess = [0.6, 0.1]
+
+# Multi-objective optimization function
+def objective(L, C0, k):
+    t_drain = drain_time(L, C0, k)  # Drainage time
+    h_range = horizontal_range(L, C0, k)  # Horizontal range
+    if t_drain <= 0 or h_range <= 0:
+        return np.inf  # Penalize invalid results
+    # Combine objectives: minimize t_drain, maximize h_range
+    return t_drain / 300 - h_range / 5  # Adjust weights as needed
 
 # Optimize correction factor parameters
-result = minimize(error_function, initial_guess, bounds=[(0.1, 1.0), (0.0, 1.0)])
+initial_guess = [0.6, 0.1]
+result = minimize(lambda params: error_function(params), initial_guess, bounds=[(0.1, 1.0), (0.0, 1.0)])
 C0_opt, k_opt = result.x
 
-# Compute drain times with optimized parameters
-computed_times = {L: drain_time(L, C0_opt, k_opt) for L in experimental_data.keys()}
+# Optimize tube length for the multi-objective function
+L_bounds = (0.1, 1.0)  # Length range
+L_result = minimize(lambda L: objective(L, C0_opt, k_opt), x0=0.5, bounds=[L_bounds])
+optimal_L = L_result.x[0]
+
+# Results
+print("\nOptimal Tube Length:")
+print(f"Optimal L: {optimal_L:.3f} m")
+print(f"Drain Time at Optimal L: {drain_time(optimal_L, C0_opt, k_opt):.2f} s")
+print(f"Horizontal Range at Optimal L: {horizontal_range(optimal_L, C0_opt, k_opt):.2f} m")
 
 # Validation results
+computed_times = {L: drain_time(L, C0_opt, k_opt) for L in experimental_data.keys()}
 print("\nValidation Results:")
 for L, exp_time in experimental_data.items():
     comp_time = computed_times[L]
     error = abs(comp_time - exp_time)
     print(f"Tube Length: {L:.2f} m | Experimental: {exp_time:.2f} s | Computed: {comp_time:.2f} s | Error: {error:.2f} s")
-
-# Optimized parameters
-print("\nOptimized Correction Factor Parameters:")
-print(f"C0 (Base Factor): {C0_opt:.3f}")
-print(f"k (Length Scaling): {k_opt:.3f}")
