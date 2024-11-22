@@ -1,89 +1,75 @@
 import numpy as np
-from scipy.integrate import quad
-from scipy.optimize import minimize
+from scipy.optimize import fsolve
+import matplotlib.pyplot as plt
 
 # Constants
-g = 9.81  # Gravity (m/s^2)
-A_r = 0.0832  # Cross-sectional area of tank (m^2)
-D = 0.00794  # Tube diameter (m)
-h0 = 0.08  # Initial water height (m)
-hf = 0.02  # Final water height (m)
-delta_z = 0.04  # Fixed vertical drop of tube (m)
+g = 9.81  # gravity (m/s^2)
+rho = 1000  # density of water (kg/m^3)
+mu = 0.001  # dynamic viscosity of water (Pa·s)
+epsilon = 0.0002  # pipe roughness (m)
+D = 0.00794  # pipe diameter (m)
+A_t = 0.32 * 0.26  # tank cross-sectional area (m^2)
+delta_h = 0.08  # water height to drain (m)
+K_m = 1.5  # minor loss coefficient
 
-# Experimental data
-experimental_data = {
-    0.2: 199,  # in seconds
-    0.3: 214,
-    0.4: 266,
-    0.6: 288
-}
+# Function to calculate the Darcy friction factor using the Colebrook equation
+def colebrook(f, Re):
+    return 1 / np.sqrt(f) + 2 * np.log10(epsilon / (3.7 * D) + 2.51 / (Re * np.sqrt(f)))
 
-# Dynamic velocity calculation with length-dependent correction factor
-def velocity(h, L, C0, k):
-    if h <= 0:
-        return 0  # Avoid negative or zero height
-    C_L = C0 + k * L  # Length-dependent correction factor
-    return C_L * np.sqrt(2 * g * h)
+# Function to calculate time to drain for a given pipe length L and angle theta
+def compute_drain_time(L, theta):
+    z_inlet = 0.02  # height of inlet (m)
+    z_outlet = 0.00  # height of outlet (m)
+    h = z_inlet - z_outlet  # total height difference
+    
+    # Compute pipe slope
+    sin_theta = np.sin(np.radians(theta))
+    cos_theta = np.cos(np.radians(theta))
+    
+    # Major losses
+    v_guess = 1.0  # initial velocity guess (m/s)
+    Re = rho * v_guess * D / mu
+    f_initial_guess = 0.02
+    f = fsolve(colebrook, f_initial_guess, args=(Re))[0]
+    
+    # Solve for velocity using Bernoulli + losses
+    def velocity_equation(v):
+        hf = f * L * v**2 / (2 * g * D)  # frictional losses
+        hm = K_m * v**2 / (2 * g)  # minor losses
+        return g * h - v**2 / 2 - g * (hf + hm)
+    
+    v = fsolve(velocity_equation, v_guess)[0]
+    
+    # Calculate flow rate
+    Q = (np.pi * D**2 / 4) * 2*v # added a factor of 2 here.
+    
+    # Calculate drain time
+    t = (A_t * delta_h) / Q
+    
+    return t
 
-# Time-to-drain integrand
-def dt_dh(h, L, C0, k):
-    v = velocity(h, L, C0, k)
-    if v <= 0:
-        return np.inf  # Prevent division by zero
-    return A_r / ((np.pi * D**2 / 4) * v)
+# Experimental data (pipe lengths in cm and times in seconds)
+experimental_lengths = np.array([20, 30, 40, 60]) / 100  # convert to meters
+experimental_times = np.array([199, 214, 266, 288])  # average experimental times in seconds
 
-# Total drain time calculation
-def drain_time(L, C0, k):
-    result, _ = quad(dt_dh, hf, h0, args=(L, C0, k), limit=1000, epsabs=1e-8, epsrel=1e-8)
-    return result
+# Model predictions
+predicted_times = [compute_drain_time(L, np.asin(0.02/L)) for L in experimental_lengths]
 
-# Horizontal range calculation
-def horizontal_range(L, C0, k):
-    if L <= delta_z:
-        return 0  # Prevent invalid tube lengths
-    theta = np.arcsin(delta_z / L)  # Tube angle
-    v_exit = velocity(hf, L, C0, k)  # Exit velocity at final height
-    t_flight = np.sqrt(2 * delta_z / g)  # Time of free fall
-    return v_exit * t_flight * np.cos(theta)
+# Validation: Plot the results
+# plt.figure(figsize=(8, 6))
+# plt.plot(experimental_lengths * 100, experimental_times, 'o-', label='Experimental Times', markersize=8)
+# plt.plot(experimental_lengths * 100, predicted_times, 's-', label='Model Predictions', markersize=8)
+# plt.xlabel('Pipe Length (cm)')
+# plt.ylabel('Time to Drain (s)')
+# plt.title('Validation of Model Against Experimental Data')
+# plt.legend()
+# plt.grid()
+# plt.show()
 
-def error_function(params):
-    C0, k = params  # Unpack parameters
-    errors = []
-    for L, exp_time in experimental_data.items():
-        comp_time = drain_time(L, C0, k)
-        errors.append((comp_time - exp_time) ** 2)  # Squared error
-    return sum(errors)  # Return scalar value
-
-
-# Multi-objective optimization function
-def objective(L, C0, k):
-    t_drain = drain_time(L, C0, k)  # Drainage time
-    h_range = horizontal_range(L, C0, k)  # Horizontal range
-    if t_drain <= 0 or h_range <= 0:
-        return np.inf  # Penalize invalid results
-    # Combine objectives: minimize t_drain, maximize h_range
-    return t_drain / 300 - h_range / 5  # Adjust weights as needed
-
-# Optimize correction factor parameters
-initial_guess = [0.6, 0.1]
-result = minimize(lambda params: error_function(params), initial_guess, bounds=[(0.1, 1.0), (0.0, 1.0)])
-C0_opt, k_opt = result.x
-
-# Optimize tube length for the multi-objective function
-L_bounds = (0.1, 1.0)  # Length range
-L_result = minimize(lambda L: objective(L, C0_opt, k_opt), x0=0.5, bounds=[L_bounds])
-optimal_L = L_result.x[0]
-
-# Results
-print("\nOptimal Tube Length:")
-print(f"Optimal L: {optimal_L:.3f} m")
-print(f"Drain Time at Optimal L: {drain_time(optimal_L, C0_opt, k_opt):.2f} s")
-print(f"Horizontal Range at Optimal L: {horizontal_range(optimal_L, C0_opt, k_opt):.2f} m")
-
-# Validation results
-computed_times = {L: drain_time(L, C0_opt, k_opt) for L in experimental_data.keys()}
-print("\nValidation Results:")
-for L, exp_time in experimental_data.items():
-    comp_time = computed_times[L]
-    error = abs(comp_time - exp_time)
-    print(f"Tube Length: {L:.2f} m | Experimental: {exp_time:.2f} s | Computed: {comp_time:.2f} s | Error: {error:.2f} s")
+# Print comparison
+print("Validation Results:")
+print(f"{'Pipe Length (cm)':<20}{'Experimental Time (s)':<25}{'Model Time (s)':<20}{'Model Error (s)':<20}")
+for L, t_exp, t_model in zip(experimental_lengths * 100, experimental_times, predicted_times):
+    print(f"{L:<20.2f}{t_exp:<25.2f}{t_model:<20.2f}{abs(t_exp-t_model)}")
+    
+    
